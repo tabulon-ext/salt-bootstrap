@@ -88,6 +88,7 @@ BLACKLIST_3001 = [
 
 BLACKLIST_3001_0 = [
     "almalinux-8",
+    "amazon-2",
     "debian-11",
     "gentoo",
     "gentoo-systemd",
@@ -95,13 +96,32 @@ BLACKLIST_3001_0 = [
     "ubuntu-2104",
 ]
 
+BLACKLIST_3002 = [
+    "almalinux-8",
+    "rockylinux-8",
+]
+
 BLACKLIST_3002_0 = [
     "almalinux-8",
+    "amazon-2",
     "debian-11",
     "gentoo",
     "gentoo-systemd",
     "rockylinux-8",
     "ubuntu-2104",
+]
+
+BLACKLIST_3003 = [
+    "almalinux-8",
+    "rockylinux-8",
+]
+
+BLACKLIST_3003_0 = [
+    "almalinux-8",
+    "amazon-2",
+    "gentoo",
+    "gentoo-systemd",
+    "rockylinux-8",
 ]
 
 SALT_BRANCHES = [
@@ -110,6 +130,8 @@ SALT_BRANCHES = [
     "3001-0",
     "3002",
     "3002-0",
+    "3003",
+    "3003-0",
     "master",
     "latest",
 ]
@@ -120,6 +142,8 @@ BRANCH_DISPLAY_NAMES = {
     "3001-0": "v3001.0",
     "3002": "v3002",
     "3002-0": "v3002.0",
+    "3003": "v3003",
+    "3003-0": "v3003.0",
     "master": "Master",
     "latest": "Latest",
 }
@@ -265,7 +289,16 @@ def generate_test_jobs():
                     if branch == "3001-0" and distro in BLACKLIST_3001_0:
                         continue
 
+                    if branch == "3002" and distro in BLACKLIST_3002:
+                        continue
+
                     if branch == "3002-0" and distro in BLACKLIST_3002_0:
+                        continue
+
+                    if branch == "3003" and distro in BLACKLIST_3003:
+                        continue
+
+                    if branch == "3003-0" and distro in BLACKLIST_3003_0:
                         continue
 
                     if python_version == "py2" and distro in PY2_BLACKLIST:
