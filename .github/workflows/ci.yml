@@ -1,0 +1,448 @@
+name: CI
+on:
+  - push
+  - pull_request
+
+concurrency:
+  # If changes are pushed to a PR, stop all running workflows before starting new ones
+  group: ${{ github.head_ref || (github.repository == 'saltstack/salt-bootstrap' && github.run_id || github.ref_name) }}
+  cancel-in-progress: true
+
+jobs:
+
+  collect-changed-files:
+    name: Collect changed files
+    runs-on: ubuntu-latest
+    outputs:
+      run-tests: ${{ steps.set-output.outputs.run-tests }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get specific changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v46
+        with:
+          separator: ","
+          files: |
+            bootstrap-salt.*
+            tests/**
+            .github/workflows/**
+          files_ignore: |
+            .github/workflows/release.yml
+
+      - name: Set Job Output
+        id: set-output
+        run: |
+          echo "run-tests=${{ steps.changed-files.outputs.any_modified }}" >> $GITHUB_OUTPUT
+
+  generate-actions-workflow:
+    name: Generate The Actions Workflow
+    runs-on: ubuntu-latest
+    needs: collect-changed-files
+
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Pre-Commit
+        run: |
+          python3 -m pip install -U pip
+          python3 -m pip install pre-commit
+          pre-commit install --install-hooks
+
+      - name: Generate Workflow Actions
+        run: |
+          pre-commit run -av generate-actions-workflow
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: collect-changed-files
+    container: koalaman/shellcheck-alpine:latest
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: |
+          shellcheck -s sh -f tty bootstrap-salt.sh
+
+  lint-powershell:
+    name: Lint PowerShell
+    runs-on: ubuntu-latest
+    needs: collect-changed-files
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          # The runner image normally ships it; only install if it is missing
+          if (-not (Get-Module PSScriptAnalyzer -ListAvailable)) {
+            Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          }
+          # Write-Host is intentional (interactive installer output), and
+          # Get-FileHash is overridden on purpose to support PowerShell 3. The
+          # script parameters all take pipeline input, and singular function
+          # names are only a style preference, so those rules are skipped too.
+          $results = Invoke-ScriptAnalyzer -Path ./bootstrap-salt.ps1 `
+            -Severity Error,Warning `
+            -ExcludeRule PSAvoidUsingWriteHost,PSAvoidOverwritingBuiltInCmdlets,PSUseProcessBlockForPipelineCommand,PSUseSingularNouns
+          $results | Format-List RuleName, Severity, Line, Message
+          # A clean run prints nothing above, so say what was checked
+          $version = (Get-Module PSScriptAnalyzer -ListAvailable | Select-Object -First 1).Version
+          Write-Host "PSScriptAnalyzer $version checked bootstrap-salt.ps1: $(@($results).Count) findings"
+          if ($results) { exit 1 }
+
+  test-shell:
+    name: Test Shell
+    runs-on: ubuntu-latest
+    needs: collect-changed-files
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellSpec
+        run: |
+          git clone --depth 1 --branch 0.28.1 https://github.com/shellspec/shellspec.git "$RUNNER_TEMP/shellspec"
+
+      # bootstrap-salt.sh is POSIX sh and Debian/Ubuntu run it under dash, so
+      # run the specs under dash as well as bash
+      - name: ShellSpec (dash)
+        run: |
+          "$RUNNER_TEMP/shellspec/shellspec" --shell dash
+
+      - name: ShellSpec (bash)
+        run: |
+          "$RUNNER_TEMP/shellspec/shellspec" --shell bash
+
+  test-powershell:
+    name: Test PowerShell
+    # Windows PowerShell 5.1 is what bootstrap-salt.ps1 mostly runs on
+    runs-on: windows-latest
+    needs: collect-changed-files
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pester
+        shell: powershell
+        run: |
+          # The image ships Pester 3; the tests need 5
+          Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force -SkipPublisherCheck
+          Import-Module Pester -MinimumVersion 5.0.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = "tests/powershell"
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = "Detailed"
+          Invoke-Pester -Configuration $config
+
+
+
+  macos-15-intel:
+    name: macOS 15 (intel)
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-macos.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: macos-15-intel
+      display-name: macOS 15 (intel)
+      container-slug: macos-15-intel
+      timeout: 20
+      runs-on: macos-15-intel
+      instances: '["stable-3006", "stable-3006-24", "stable-3007", "stable-3007-1", "stable-3008", "latest"]'
+
+
+  macos-26:
+    name: macOS 26 (m-series)
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-macos.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: macos-26
+      display-name: macOS 26 (m-series)
+      container-slug: macos-26
+      timeout: 20
+      runs-on: macos-26
+      instances: '["stable-3006", "stable-3006-24", "stable-3007", "stable-3007-1", "stable-3008", "latest"]'
+
+
+  macos-26-intel:
+    name: macOS 26 (intel)
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-macos.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: macos-26-intel
+      display-name: macOS 26 (intel)
+      container-slug: macos-26-intel
+      timeout: 20
+      runs-on: macos-26-intel
+      instances: '["stable-3006", "stable-3006-24", "stable-3007", "stable-3007-1", "stable-3008", "latest"]'
+
+
+
+  windows-2022:
+    name: Windows 2022
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-windows.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: windows-2022
+      display-name: Windows 2022
+      container-slug: windows-2022
+      timeout: 20
+      runs-on: windows-2022
+      instances: '["stable-3006", "stable-3006-24", "stable-3007", "stable-3007-1", "stable-3008", "latest"]'
+
+
+  windows-2025:
+    name: Windows 2025
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-windows.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: windows-2025
+      display-name: Windows 2025
+      container-slug: windows-2025
+      timeout: 20
+      runs-on: windows-2025
+      instances: '["stable-3006", "stable-3006-24", "stable-3007", "stable-3007-1", "stable-3008", "latest"]'
+
+
+
+  altlinux-10:
+    name: ALT Linux 10
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-linux.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: altlinux-10
+      display-name: ALT Linux 10
+      container-slug: altlinux-10
+      timeout: 20
+      instances: '["stable-3006", "git-3006", "onedir-3006", "stable-3006-24", "stable-3007", "git-3007", "onedir-3007", "stable-3007-1", "git-master", "latest", "default"]'
+
+
+  altlinux-11:
+    name: ALT Linux 11
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-linux.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: altlinux-11
+      display-name: ALT Linux 11
+      container-slug: altlinux-11
+      timeout: 20
+      instances: '["stable-3007", "git-3007", "onedir-3007", "stable-3007-1", "stable-3008", "git-3008", "onedir-3008", "git-master", "latest", "default"]'
+
+
+  amazonlinux-2023:
+    name: Amazon 2023
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-linux.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: amazonlinux-2023
+      display-name: Amazon 2023
+      container-slug: amazonlinux-2023
+      timeout: 20
+      instances: '["stable-3006", "onedir-3006", "stable-3006-24", "stable-3007", "onedir-3007", "stable-3007-1", "stable-3008", "git-3008", "onedir-3008", "latest", "default"]'
+
+
+  archlinux:
+    name: Arch Linux
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-linux.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: archlinux
+      display-name: Arch Linux
+      container-slug: archlinux
+      timeout: 20
+      instances: '["stable-3006", "git-3006", "onedir-3006", "stable-3006-24", "stable-3007", "git-3007", "onedir-3007", "stable-3007-1", "stable-3008", "git-3008", "onedir-3008", "git-master", "latest", "default"]'
+
+
+  debian-12:
+    name: Debian 12
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-linux.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: debian-12
+      display-name: Debian 12
+      container-slug: debian-12
+      timeout: 20
+      instances: '["stable-3007", "git-3007", "onedir-3007", "stable-3007-1", "stable-3008", "git-3008", "onedir-3008", "git-master", "latest", "default"]'
+
+
+  debian-13:
+    name: Debian 13
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-linux.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: debian-13
+      display-name: Debian 13
+      container-slug: debian-13
+      timeout: 20
+      instances: '["stable-3006", "onedir-3006", "stable-3006-24", "stable-3007", "onedir-3007", "stable-3007-1", "stable-3008", "git-3008", "onedir-3008", "latest", "default"]'
+
+
+  photon-5:
+    name: Photon OS 5
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-linux.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: photon-5
+      display-name: Photon OS 5
+      container-slug: photon-5
+      timeout: 20
+      instances: '["stable-3006", "onedir-3006", "stable-3006-24", "stable-3007", "onedir-3007", "stable-3007-1", "stable-3008", "git-3008", "onedir-3008", "latest", "default"]'
+
+
+  rockylinux-8:
+    name: Rocky Linux 8
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-linux.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: rockylinux-8
+      display-name: Rocky Linux 8
+      container-slug: rockylinux-8
+      timeout: 20
+      instances: '["stable-3006", "onedir-3006", "stable-3006-24", "stable-3007", "onedir-3007", "stable-3007-1", "stable-3008", "onedir-3008", "latest", "default"]'
+
+
+  rockylinux-9:
+    name: Rocky Linux 9
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-linux.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: rockylinux-9
+      display-name: Rocky Linux 9
+      container-slug: rockylinux-9
+      timeout: 20
+      instances: '["stable-3006", "onedir-3006", "stable-3006-24", "stable-3007", "onedir-3007", "stable-3007-1", "stable-3008", "git-3008", "onedir-3008", "latest", "default"]'
+
+
+  ubuntu-2204:
+    name: Ubuntu 22.04
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-linux.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: ubuntu-2204
+      display-name: Ubuntu 22.04
+      container-slug: ubuntu-22.04
+      timeout: 20
+      instances: '["stable-3006", "git-3006", "onedir-3006", "stable-3006-24", "stable-3007", "git-3007", "onedir-3007", "stable-3007-1", "stable-3008", "git-3008", "onedir-3008", "git-master", "latest", "default"]'
+
+
+  ubuntu-2604:
+    name: Ubuntu 26.04
+    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'
+    uses: ./.github/workflows/test-linux.yml
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: ubuntu-2604
+      display-name: Ubuntu 26.04
+      container-slug: ubuntu-26.04
+      timeout: 20
+      instances: '["stable-3006", "git-3006", "onedir-3006", "stable-3006-24", "stable-3007", "git-3007", "onedir-3007", "stable-3007-1", "stable-3008", "git-3008", "onedir-3008", "git-master", "latest", "default"]'
+
+
+  set-pipeline-exit-status:
+    # This step is just so we can make github require this step, to pass checks
+    # on a pull request instead of requiring all
+    name: Set the ${{ github.workflow }} Pipeline Exit Status
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - lint-powershell
+      - test-shell
+      - test-powershell
+      - generate-actions-workflow
+      - macos-15-intel
+      - macos-26
+      - macos-26-intel
+      - windows-2022
+      - windows-2025
+      - altlinux-10
+      - altlinux-11
+      - amazonlinux-2023
+      - archlinux
+      - debian-12
+      - debian-13
+      - photon-5
+      - rockylinux-8
+      - rockylinux-9
+      - ubuntu-2204
+      - ubuntu-2604
+    if: always()
+    steps:
+
+      - name: Check Needs Results
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "One or more required jobs failed or were cancelled"
+          exit 1
+
+      - name: Done
+        if: always()
+        run:
+          echo "All worflows finished"

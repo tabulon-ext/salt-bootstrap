@@ -1,81 +1,283 @@
-name: Release
+name: Cut Release
 
-on:
-  push:
-    tags:
-      - '*'
+on: workflow_dispatch
 
 jobs:
-  bootstrap:
-    name: Update Release Checksums on Develop
+
+  check-requirements:
+    name: Check Requirements
     runs-on: ubuntu-latest
-
+    environment: release-check
     steps:
-      - uses: actions/checkout@v2
-        if: github.repository == 'saltstack/salt-bootstrap'
+      - name: Check For Admin Permission
+        uses: actions-cool/check-user-permission@v2
         with:
-          ref: stable
+          require: admin
+          username: ${{ github.triggering_actor }}
 
-      - name: Get bootstrap-salt.sh sha256sum
-        if: github.repository == 'saltstack/salt-bootstrap'
+      - name: Check Repository
         run: |
-          echo "SH=$(sha256sum bootstrap-salt.sh | awk '{ print $1 }')" >> $GITHUB_ENV
-          echo "BS_VERSION=$(sh bootstrap-salt.sh -v | awk '{ print $4 }')" >> $GITHUB_ENV
+          if [ "${{ vars.RUN_RELEASE_BUILDS }}" = "1" ]; then
+            MSG="Running workflow because RUN_RELEASE_BUILDS=1"
+            echo "${MSG}"
+            echo "${MSG}" >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          echo "Trying to run the release workflow from repository ${{ github.repository }}"
+          if [ "${{ github.repository }}" != "saltstack/salt-bootstrap" ]; then
+              MSG="Running the release workflow from the ${{ github.repository }} repository is not allowed"
+              echo "${MSG}"
+              echo "${MSG}" >> "${GITHUB_STEP_SUMMARY}"
+              MSG="Allowed repository: saltstack/salt-bootstrap"
+              echo "${MSG}"
+              echo "${MSG}" >> "${GITHUB_STEP_SUMMARY}"
+              exit 1
+          else
+              MSG="Allowed to release from repository ${{ github.repository }}"
+              echo "${MSG}"
+              echo "${MSG}" >> "${GITHUB_STEP_SUMMARY}"
+          fi
 
-      - uses: actions/checkout@v2
-        if: github.repository == 'saltstack/salt-bootstrap'
+      - name: Check Branch
+        run: |
+          echo "Trying to run the release workflow from branch ${{ github.ref_name }}"
+          if [ "${{ github.ref_name }}" != "develop" ]; then
+              echo "Running the release workflow from the ${{ github.ref_name }} branch is not allowed"
+              echo "Allowed branches: develop"
+              exit 1
+          else
+              echo "Allowed to release from branch ${{ github.ref_name }}"
+          fi
+
+  update-develop:
+    name: Update CHANGELOG.md and bootstrap-salt.sh
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # To be able to publish the release
+    environment: release
+    needs:
+      - check-requirements
+    outputs:
+      release-version: ${{ steps.update-repo.outputs.release-version }}
+    steps:
+      - uses: actions/checkout@v4
         with:
           ref: develop
+          repository: ${{ github.repository }}
+          ssh-key: ${{ secrets.SALT_BOOTSTRAP_RELEASE_KEY }}
 
-      - name: Set up Python 3.7
-        if: github.repository == 'saltstack/salt-bootstrap'
-        uses: actions/setup-python@v1
+      - name: Install Requirements
+        run: |
+          python3 -m pip install -r requirements/release.txt
+          pre-commit install --install-hooks
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          git config --global user.name "Salt Project Packaging"
+          git config --global user.email saltproject-packaging@vmware.com
+          git config --global commit.gpgsign false
+
+      - name: Update Repository
+        id: update-repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 .github/workflows/scripts/cut-release.py --repo ${{ github.repository }}
+
+      - name: Show Changes
+        run: |
+          git status
+          git diff
+
+      - name: Commit Changes
+        run: |
+          git commit -am "Update develop branch for the ${{ steps.update-repo.outputs.release-version }} release" || \
+            git commit -am "Update develop branch for the ${{ steps.update-repo.outputs.release-version }} release"
+
+      - name: Push Changes
+        uses: ad-m/github-push-action@b87afee92c6e70ea888be6203a3e9426fda49839
         with:
-          python-version: 3.7
+          ssh: true
+          atomic: true
+          branch: develop
+          repository: ${{ github.repository }}
+
+      - name: Upload Release Details
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-details
+          path: |
+            .cut_release_version
+            .cut_release_changes
+          include-hidden-files: true
+
+  merge-develop-into-stable:
+    name: Merge develop into stable
+    runs-on: ubuntu-latest
+    needs:
+      - update-develop
+    environment: release
+    permissions:
+      contents: write  # To be able to publish the release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stable
+          repository: ${{ github.repository }}
+          ssh-key: ${{ secrets.SALT_BOOTSTRAP_RELEASE_KEY }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          git config --global user.name "Salt Project Packaging"
+          git config --global user.email saltproject-packaging@vmware.com
+          git config --global commit.gpgsign false
+
+      - name: Download Release Details
+        uses: actions/download-artifact@v4
+        with:
+          name: release-details
+
+      - name: Merge develop into stable
+        run: |
+          git merge --no-ff -m "Merge develop into stable for ${{ needs.update-develop.outputs.release-version }} release" origin/develop || touch .git-conflicts
+          if [ -f .git-conflicts ]
+          then
+            git diff
+            for f in $(git status | grep 'both modified' | awk '{ print $3 }')
+            do
+              git checkout --theirs "$f"
+              pre-commit run -av --files "$f"
+              git add "$f"
+            done
+            git commit -a -m "Merge develop into stable for ${{ needs.update-develop.outputs.release-version }} release(auto resolving conflicts to the develop version)"
+          fi
+
+      - name: Tag The ${{ needs.update-develop.outputs.release-version }} Release
+        run: |
+          git tag --no-sign -m "Release ${{ needs.update-develop.outputs.release-version }}" -a ${{ needs.update-develop.outputs.release-version }}
+
+      - name: Update bootstrap-salt.sh sha256sum's
+        run: |
+          sha256sum bootstrap-salt.sh > bootstrap-salt.sh.sha256
+          sha256sum bootstrap-salt.ps1 > bootstrap-salt.ps1.sha256
+          git commit -a -m "Update sha256 checksums" || git commit -a -m "Update sha256 checksums"
+
+      - name: Push Changes
+        uses: ad-m/github-push-action@b87afee92c6e70ea888be6203a3e9426fda49839
+        with:
+          ssh: true
+          tags: true
+          atomic: true
+          branch: stable
+          repository: ${{ github.repository }}
+
+  publish-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - merge-develop-into-stable
+    environment: release
+    permissions:
+      contents: write  # To be able to publish the release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stable
+          repository: ${{ github.repository }}
+          ssh-key: ${{ secrets.SALT_BOOTSTRAP_RELEASE_KEY }}
+
+      - name: Download Release Details
+        uses: actions/download-artifact@v4
+        with:
+          name: release-details
+
+      - name: Update Environment
+        run: |
+          CUT_RELEASE_VERSION=$(cat .cut_release_version)
+          echo "CUT_RELEASE_VERSION=${CUT_RELEASE_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Create Github Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: ${{ env.CUT_RELEASE_VERSION }}
+          tag_name: ${{ env.CUT_RELEASE_VERSION }}
+          body_path: .cut_release_changes
+          target_commitish: stable
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          files: |
+            bootstrap-salt.sh
+            bootstrap-salt.sh.sha256
+            bootstrap-salt.ps1
+            bootstrap-salt.ps1.sha256
+            LICENSE
+
+      - name: Delete Release Details Artifact
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: release-details
+          failOnError: false
+
+  update-develop-checksums:
+    name: Update Release Checksums on Develop
+    runs-on: ubuntu-latest
+    needs:
+      - publish-release
+    environment: release
+    permissions:
+      contents: write  # For action peter-evans/create-pull-request
+      pull-requests: write  # For action peter-evans/create-pull-request
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stable
+          repository: ${{ github.repository }}
+          ssh-key: ${{ secrets.SALT_BOOTSTRAP_RELEASE_KEY }}
+
+      - name: Get bootstrap-salt.sh on stable branch sha256sum
+        run: |
+          echo "SH=$(sha256sum bootstrap-salt.sh | awk '{ print $1 }')" >> "$GITHUB_ENV"
+          echo "BS_VERSION=$(sh bootstrap-salt.sh -v | awk '{ print $4 }')" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          repository: ${{ github.repository }}
+          ssh-key: ${{ secrets.SALT_BOOTSTRAP_RELEASE_KEY }}
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          git config --global user.name "Salt Project Packaging"
+          git config --global user.email saltproject-packaging@vmware.com
+          git config --global commit.gpgsign false
 
       - name: Update Latest Release on README
-        if: github.repository == 'saltstack/salt-bootstrap'
         run: |
           python3 .github/workflows/scripts/update-release-shasum.py ${{ env.BS_VERSION }} ${{ env.SH }}
 
-      - name: Create Pull Request Against Develop
-        uses: peter-evans/create-pull-request@v3
-        with:
-          title: Update README.rst with ${{ env.BS_VERSION }} release sha256sum
-          commit-message: Update README.rst with ${{ env.BS_VERSION }} release sha256sum
-          delete-branch: true
-
-  salt:
-    name: Update Release on Salt Repo
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v2
-        if: github.repository == 'saltstack/salt-bootstrap'
-        with:
-          ref: stable
-
-      - name: Get bootstrap version
-        if: github.repository == 'saltstack/salt-bootstrap'
+      - name: Show Changes
         run: |
-          echo "BS_VERSION=$(sh bootstrap-salt.sh -v | awk '{ print $4 }')" >> $GITHUB_ENV
+          git status
+          git diff
 
-      - uses: actions/checkout@v2
-        if: github.repository == 'saltstack/salt-bootstrap'
-        with:
-          repository: saltstack/salt
-          ref: master
-          path: salt-checkout
-
-      - name: Update bootstrap script on Salt
-        if: github.repository == 'saltstack/salt-bootstrap'
+      - name: Commit Changes
         run: |
-          cp bootstrap-salt.sh salt-checkout/salt/cloud/deploy/bootstrap-salt.sh
+          git commit -am "Update README.rst with ${{ env.BS_VERSION }} release sha256sum" || \
+            git commit -am "Update README.rst with ${{ env.BS_VERSION }} release sha256sum"
 
-      - name: Create Pull Request Against Develop
-        uses: peter-evans/create-pull-request@v3
+      - name: Push Changes
+        uses: ad-m/github-push-action@b87afee92c6e70ea888be6203a3e9426fda49839
         with:
-          title: Update the bootstrap script to v${{ env.BS_VERSION }}
-          path: salt-checkout
-          commit-message: Update the bootstrap script to v${{ env.BS_VERSION }}
-          delete-branch: true
+          ssh: true
+          atomic: true
+          branch: develop
+          repository: ${{ github.repository }}

@@ -1,35 +1,497 @@
-# -*- coding: utf-8 -*-
+import configparser
 import json
-import os
-import pytest
 import logging
-import pprint
-from contextlib import nullcontext
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+
+import pytest
 
 log = logging.getLogger(__name__)
 
 
-def selected_context_manager(host):
-    if "windows" in os.environ.get("KITCHEN_INSTANCE"):
-        return nullcontext()
-    return host.sudo()
+@pytest.fixture
+def path():
+    if platform.system() == "Windows":
+        salt_path = "C:\\Program Files\\Salt Project\\Salt"
+        if salt_path not in os.environ["path"]:
+            os.environ["path"] = f'{os.environ["path"]};{salt_path}'
+        yield os.environ["path"]
+    else:
+        yield ""
 
 
-def test_ping(host):
-    with selected_context_manager(host):
-        assert host.salt("test.ping", "--timeout=120")
-
-
-def test_target_python_version(host, target_python_version):
-    with selected_context_manager(host):
-        ret = host.salt("grains.item", "pythonversion", "--timeout=120")
-        assert ret["pythonversion"][0] == target_python_version
-
-
-def test_target_salt_version(host, target_salt_version):
-    with selected_context_manager(host):
-        ret = host.salt("grains.item", "saltversion", "--timeout=120")
-        if target_salt_version.endswith(".0"):
-            assert ret["saltversion"] == ".".join(target_salt_version.split(".")[:-1])
+def run_salt_call(cmd):
+    """
+    Runs salt call command and returns a dictionary
+    Accepts cmd as a list
+    """
+    json_data = {"local": {}}
+    if platform.system() == "Windows":
+        cmd.append("--out=json")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if 0 == result.returncode:
+            json_data = json.loads(result.stdout)
         else:
-            assert ret["saltversion"].startswith(target_salt_version)
+            log.error(f"failed to produce output result, '{result}'")
+
+    else:
+        if platform.system() == "Darwin":
+            cmdl = ["sudo"]
+        else:
+            cmdl = []
+        cmdl.extend(cmd)
+        cmdl.append("--out=json")
+        try:
+            result = subprocess.run(cmdl, capture_output=True, text=True)
+        except TypeError:
+            result = subprocess.run(
+                cmdl,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+            )
+        if 0 == result.returncode:
+            json_data = json.loads(result.stdout)
+        else:
+            log.error(f"failed to produce output result, '{result}'")
+
+    return json_data["local"]
+
+
+def test_ping(path):
+    cmd = ["salt-call", "--local", "test.ping"]
+    result = run_salt_call(cmd)
+    assert result == True
+
+
+def test_target_python_version(path, target_python_version):
+    cmd = ["salt-call", "--local", "grains.item", "pythonversion", "--timeout=120"]
+    result = run_salt_call(cmd)
+    # Returns: {'pythonversion': [3, 10, 11, 'final', 0]}
+    py_maj_ver = result["pythonversion"][0]
+    assert py_maj_ver == target_python_version
+
+
+def test_target_salt_version(path, target_salt_version):
+    if not target_salt_version:
+        pytest.skip(f"No target version specified")
+    cmd = ["salt-call", "--local", "grains.item", "saltversion", "--timeout=120"]
+    result = run_salt_call(cmd)
+    # Returns: {'saltversion': '3006.9+217.g53cfa53040'}
+    adj_saltversion = result["saltversion"].split("+")[0]
+    assert adj_saltversion == target_salt_version
+
+
+def test_apt_keyring_is_trusted():
+    """
+    Regression test for https://github.com/saltstack/salt/issues/69740
+    apt only recognizes .gpg (binary) or .asc (armored) keyring files. A
+    keyring referenced by an extension apt doesn't recognize is silently
+    ignored, which apt reports as a NO_PUBKEY / unsigned-repository error.
+    """
+    if platform.system() != "Linux" or shutil.which("apt-get") is None:
+        pytest.skip("Not an apt-based system")
+
+    sources_file = "/etc/apt/sources.list.d/salt.sources"
+    if not os.path.exists(sources_file):
+        pytest.skip("No salt.sources file present")
+
+    signed_by = None
+    with open(sources_file) as fp:
+        for line in fp:
+            if line.strip().startswith("Signed-By:"):
+                signed_by = line.split(":", 1)[1].strip()
+                break
+
+    assert signed_by, "salt.sources has no Signed-By line"
+    assert os.path.exists(signed_by), f"Signed-By keyring {signed_by} does not exist"
+    assert signed_by.endswith(
+        ".gpg"
+    ), f"apt does not recognize {signed_by}'s extension as a valid keyring"
+
+    # Confirm the keyring is actually binary GPG data, not raw ASCII-armored text
+    file_result = subprocess.run(
+        ["file", signed_by], capture_output=True, text=True
+    )
+    assert "PGP public key block" not in file_result.stdout, file_result.stdout
+
+    result = subprocess.run(["apt-get", "update"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "NO_PUBKEY" not in result.stderr, result.stderr
+    assert "unsupported filetype" not in result.stderr, result.stderr
+
+
+DEBIAN_REPO_FUNCTIONS = [
+    "__install_saltstack_ubuntu_repository",
+    "__install_saltstack_ubuntu_onedir_repository",
+    "__install_saltstack_debian_repository",
+    "__install_saltstack_debian_onedir_repository",
+]
+
+SAMPLE_SALT_SOURCES = """\
+X-Repolib-Name: Salt Project
+Types: deb
+URIs: https://packages.broadcom.com/artifactory/saltproject-deb
+Signed-By: /etc/apt/keyrings/salt-archive-keyring.pgp
+Suites: stable
+Components: main
+"""
+
+
+# bootstrap-salt.sh is POSIX sh, and Debian/Ubuntu run it under dash. Run the
+# functions extracted from it with "sh" rather than "bash" so that a bashism
+# fails here too. Set BOOTSTRAP_TEST_SHELL to pick another shell, e.g. "dash".
+TEST_SHELL = os.environ.get("BOOTSTRAP_TEST_SHELL", "sh")
+
+
+def _shell_has_gnu_sed():
+    if sys.platform == "win32" and "BOOTSTRAP_TEST_SHELL" not in os.environ:
+        # Git's "sh" (Cygwin) has no default PATH for "env -i", which the
+        # script relies on, so the extracted functions misbehave there. These
+        # tests are meant for Linux; opt in with BOOTSTRAP_TEST_SHELL.
+        return False
+    # Check through "<shell> -c", the exact invocation the tests use, since
+    # e.g. on GitHub's Windows runners plain "sed" on the host PATH is Git
+    # Bash's GNU sed, but "bash" on the host PATH resolves to the WSL launcher
+    # stub instead - a different, often broken, resolution path.
+    try:
+        result = subprocess.run(
+            [TEST_SHELL, "-c", "sed --version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+    except FileNotFoundError:
+        return False
+    return "GNU sed" in result.stdout
+
+
+REPO_FILE_FUNCTIONS = DEBIAN_REPO_FUNCTIONS + [
+    "__install_saltstack_rhel_onedir_repository",
+    "__install_saltstack_fedora_onedir_repository",
+]
+
+SAMPLE_SALT_REPO = """[salt-repo-3006-lts]
+name=Salt Repo for Salt v3006 LTS
+baseurl=https://packages.broadcom.com/artifactory/saltproject-rpm/
+skip_if_unavailable=True
+priority=10
+enabled=1
+enabled_metadata=1
+gpgcheck=1
+exclude=*3007* *3008* *3009* *3010*
+gpgkey=https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public
+
+[salt-repo-latest]
+name=Salt Repo for Salt LATEST release
+baseurl=https://packages.broadcom.com/artifactory/saltproject-rpm/
+skip_if_unavailable=True
+priority=10
+enabled=0
+enabled_metadata=1
+gpgcheck=1
+gpgkey=https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public
+"""
+
+
+def _read_bootstrap_script():
+    bootstrap_script = os.path.join(
+        os.path.dirname(__file__), "..", "..", "bootstrap-salt.sh"
+    )
+    if not os.path.exists(bootstrap_script):
+        pytest.skip("bootstrap-salt.sh not found (not running from a repo checkout)")
+    with open(bootstrap_script) as fp:
+        return fp.read()
+
+
+def _extract_function(script, func_name):
+    match = re.search(rf"^{re.escape(func_name)}\(\) {{.*?^}}", script, re.M | re.S)
+    assert match, f"could not find {func_name}() in bootstrap-salt.sh"
+    return match.group(0)
+
+
+def _run_rewrite_repo_url(tmp_path, script, repo_file, repo_url):
+    # Run from a file; passing this through "sh -c" mangles quoting on Windows
+    shell = "\n".join(
+        [
+            f'_REPO_URL="{repo_url}"',
+            _extract_function(script, "__rewrite_repo_url"),
+            '__rewrite_repo_url "$1"',
+        ]
+    )
+    with open(str(tmp_path / "rewrite.sh"), "w", newline="\n") as fp:
+        fp.write(shell + "\n")
+    # Relative paths, since backslashes in Windows paths get mangled by the shell
+    subprocess.run(
+        [TEST_SHELL, "rewrite.sh", repo_file.name],
+        cwd=str(tmp_path),
+        check=True,
+    )
+
+
+def test_repo_functions_call_rewrite_repo_url():
+    """
+    Every function that downloads a repo definition from salt-install-guide must
+    rewrite it for -R/_CUSTOM_REPO_URL, otherwise the system keeps pointing at
+    packages.broadcom.com (issues #2123, #2135).
+    """
+    script = _read_bootstrap_script()
+
+    # Discover rather than rely on a hand-kept list, so new distro functions that
+    # download a repo definition are covered automatically. Commented-out fetches
+    # (e.g. Photon) are ignored.
+    discovered = set()
+    for match in re.finditer(r"^(\w+)\(\) {.*?^}", script, re.M | re.S):
+        code = "\n".join(
+            line
+            for line in match.group(0).splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        if "salt-install-guide/releases" in code:
+            discovered.add(match.group(1))
+
+    # Guard against the discovery silently matching nothing
+    missing = set(REPO_FILE_FUNCTIONS) - discovered
+    assert not missing, f"repo discovery missed known functions: {sorted(missing)}"
+
+    for func_name in sorted(discovered):
+        body = _extract_function(script, func_name)
+        assert (
+            "__rewrite_repo_url" in body
+        ), f"{func_name} downloads a repo file but does not call __rewrite_repo_url"
+
+
+def test_debian_repo_files_rewrite_custom_repo_url(tmp_path):
+    """
+    Regression test for https://github.com/saltstack/salt-bootstrap/issues/2123
+    The -R/_CUSTOM_REPO_URL option must rewrite the "URIs:" line in
+    salt.sources for Debian/Ubuntu, not just the GPG key fetch URL.
+    """
+    if not _shell_has_gnu_sed():
+        # bootstrap-salt.sh's sed -i syntax targets GNU sed, which is what these
+        # distros actually ship. BSD sed (e.g. on macOS) parses "-i" differently,
+        # and isn't representative of the real target either way.
+        pytest.skip(f"{TEST_SHELL} with GNU sed not available")
+    script = _read_bootstrap_script()
+
+    sources_file = tmp_path / "salt.sources"
+    with open(str(sources_file), "w", newline="\n") as fp:
+        fp.write(SAMPLE_SALT_SOURCES)
+    _run_rewrite_repo_url(tmp_path, script, sources_file, "repo.example.com/myrepo")
+
+    result = sources_file.read_text()
+    assert "packages.broadcom.com" not in result, result
+    assert "URIs: https://repo.example.com/myrepo/saltproject-deb" in result
+
+
+def test_rpm_repo_file_rewrite_custom_repo_url(tmp_path):
+    """
+    Regression test for https://github.com/saltstack/salt-bootstrap/issues/2135
+    The -R/_CUSTOM_REPO_URL option must rewrite every baseurl= and gpgkey= in
+    the downloaded salt.repo for RHEL/CentOS/Fedora.
+    """
+    if not _shell_has_gnu_sed():
+        pytest.skip(f"{TEST_SHELL} with GNU sed not available")
+    script = _read_bootstrap_script()
+
+    repo_file = tmp_path / "salt.repo"
+    with open(str(repo_file), "w", newline="\n") as fp:
+        fp.write(SAMPLE_SALT_REPO)
+    # "&" and "#" are special in the sed replacement/delimiter
+    _run_rewrite_repo_url(tmp_path, script, repo_file, "repo.example.com/my&repo#1")
+
+    result = repo_file.read_text()
+    assert "packages.broadcom.com" not in result, result
+    assert result.count("baseurl=https://repo.example.com/my&repo#1/saltproject-rpm/") == 2
+    assert (
+        result.count(
+            "gpgkey=https://repo.example.com/my&repo#1/api/security/keypair/SaltProjectKey/public"
+        )
+        == 2
+    )
+    # Only the URLs change; sections and their enabled state are preserved
+    assert "[salt-repo-3006-lts]" in result and "[salt-repo-latest]" in result
+    assert result.count("enabled=1") == 1 and result.count("enabled=0") == 1
+
+
+def test_rpm_point_release_repo_excludes_other_majors():
+    """
+    Regression test for https://github.com/saltstack/salt-bootstrap/issues/2147
+    For a point release (e.g. "stable 3006.24") bootstrap writes its own
+    salt.repo section. Its baseurl serves every major, so the section must
+    exclude the other majors or the next "dnf update" moves Salt to the newest
+    one in the repo.
+    """
+    repo_file = "/etc/yum.repos.d/salt.repo"
+    if platform.system() != "Linux" or not os.path.exists(repo_file):
+        pytest.skip("No salt.repo file present")
+    if os.path.exists("/etc/photon-release"):
+        pytest.skip("tdnf doesn't read exclude= from a .repo file")
+
+    repo = configparser.ConfigParser(interpolation=None)
+    repo.read(repo_file)
+    # Only the point release path names the section after the full version,
+    # e.g. [salt-repo-3006.24-lts]
+    sections = []
+    for section in repo.sections():
+        match = re.match(r"salt-repo-(\d{4})\.\S+-lts$", section)
+        if match:
+            sections.append((section, int(match.group(1))))
+    if not sections:
+        pytest.skip("salt.repo was not written for a point release")
+
+    for section, major in sections:
+        exclude = repo[section].get("exclude", "").split()
+        assert f"*{major}*" not in exclude, f"[{section}] excludes its own major"
+        for other in range(3006, 3011):
+            if other != major:
+                assert f"*{other}*" in exclude, f"[{section}] does not exclude {other}"
+
+
+DETECTION_FUNCTIONS = [
+    "__gather_linux_system_info",
+    "__sort_release_files",
+    "__parse_version_string",
+    "__unquote_string",
+    "__derive_debian_numeric_version",
+    "__camelcase_split",
+]
+
+
+@pytest.mark.parametrize(
+    "os_id,version_id,os_name,expected",
+    [
+        ("photon", "5.0", "VMware Photon OS", "vmware_photon_os"),
+        ("photon", "4.0", "VMware Photon OS", "vmware_photon_os"),
+        ("altlinux", "11", "ALT Server", "alt_linux"),
+        ("alpine", "3.20.3", "Alpine Linux", "alpine_linux"),
+    ],
+)
+def test_os_release_id_resolves_to_install_functions(
+    tmp_path, os_id, version_id, os_name, expected
+):
+    """
+    Regression test for UBMVCFOPS-14333
+    When /etc/lsb-release is absent, distro detection falls back to the ID= in
+    /etc/os-release. The resulting DISTRO_NAME_L must match the name used by
+    the distro's install_* functions, or bootstrap exits with "No dependencies
+    installation function found."
+    """
+    if not _shell_has_gnu_sed():
+        pytest.skip(f"{TEST_SHELL} with GNU sed not available")
+
+    bootstrap_script = os.path.join(
+        os.path.dirname(__file__), "..", "..", "bootstrap-salt.sh"
+    )
+    if not os.path.exists(bootstrap_script):
+        pytest.skip("bootstrap-salt.sh not found (not running from a repo checkout)")
+
+    with open(bootstrap_script) as fp:
+        script = fp.read()
+
+    funcs = []
+    for func_name in DETECTION_FUNCTIONS:
+        match = re.search(rf"^{re.escape(func_name)}\(\) {{.*?^}}", script, re.M | re.S)
+        assert match, f"could not find {func_name}() in bootstrap-salt.sh"
+        funcs.append(match.group(0))
+
+    name_l_match = re.search(r"^DISTRO_NAME_L=.*$", script, re.M)
+    assert name_l_match, "could not find DISTRO_NAME_L assignment in bootstrap-salt.sh"
+
+    fake_etc = tmp_path / "etc"
+    fake_etc.mkdir()
+    # open() rather than write_text(newline=), which needs Python 3.10+
+    with open(str(fake_etc / "os-release"), "w", newline="\n") as fp:
+        fp.write(f'NAME="{os_name}"\nID={os_id}\nVERSION_ID={version_id}\n')
+
+    # Keep the host's lsb_release from short-circuiting os-release detection
+    shell = "\n".join(
+        ["FAKE_ETC=etc", "lsb_release() { return 1; }"]
+        + [func.replace("/etc", "${FAKE_ETC}") for func in funcs]
+        + [
+            "__gather_linux_system_info",
+            name_l_match.group(0),
+            'echo "$DISTRO_NAME_L"',
+        ]
+    )
+    # Run from a file; passing this through "sh -c" mangles quoting on Windows
+    with open(str(tmp_path / "detect.sh"), "w", newline="\n") as fp:
+        fp.write(shell + "\n")
+
+    result = subprocess.run(
+        [TEST_SHELL, "detect.sh"],
+        cwd=str(tmp_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    assert result.returncode == 0, result.stderr
+    distro_name_l = result.stdout.strip()
+    assert distro_name_l == expected
+
+    assert re.search(
+        rf"^install_{re.escape(distro_name_l)}_\w*deps\(\)", script, re.M
+    ), f"no install_{distro_name_l}_*deps() in bootstrap-salt.sh"
+
+
+CONSOLE_COLORS = {
+    "Black",
+    "DarkBlue",
+    "DarkGreen",
+    "DarkCyan",
+    "DarkRed",
+    "DarkMagenta",
+    "DarkYellow",
+    "Gray",
+    "DarkGray",
+    "Blue",
+    "Green",
+    "Cyan",
+    "Red",
+    "Magenta",
+    "Yellow",
+    "White",
+}
+
+
+def _read_powershell_script():
+    ps_script = os.path.join(os.path.dirname(__file__), "..", "..", "bootstrap-salt.ps1")
+    if not os.path.exists(ps_script):
+        pytest.skip("bootstrap-salt.ps1 not found (not running from a repo checkout)")
+    with open(ps_script) as fp:
+        return fp.read()
+
+
+def test_powershell_conf_dirs_are_set_after_root_dir():
+    """
+    Regression test for https://github.com/saltstack/salt-bootstrap/issues/2138
+    $ConfDir and $PkiDir are derived from $RootDir, so they must be assigned
+    after $RootDir is final (including the registry override). Otherwise they
+    resolve to "\conf" and Vagrant files are copied to the wrong place.
+    """
+    script = _read_powershell_script()
+    root_dir_assignments = [
+        m.start() for m in re.finditer(r"^\s*\$RootDir\s*=", script, re.M)
+    ]
+    conf_dir = re.search(r"^\$ConfDir\s*=", script, re.M)
+    pki_dir = re.search(r"^\$PkiDir\s*=", script, re.M)
+    assert root_dir_assignments and conf_dir and pki_dir
+    assert conf_dir.start() > max(root_dir_assignments)
+    assert pki_dir.start() > conf_dir.start()
+
+
+def test_powershell_foreground_colors_are_valid():
+    """
+    Regression test for https://github.com/saltstack/salt-bootstrap/issues/2138
+    An invalid -ForegroundColor throws under $ErrorActionPreference = "Stop".
+    """
+    script = _read_powershell_script()
+    for color in re.findall(r"-ForegroundColor\s+(\w+)", script, re.I):
+        # PowerShell parameter values are case-insensitive
+        assert color.lower() in {
+            c.lower() for c in CONSOLE_COLORS
+        }, f"invalid -ForegroundColor {color}"

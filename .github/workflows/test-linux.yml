@@ -1,0 +1,174 @@
+name: Test Linux
+on:
+  workflow_call:
+    inputs:
+      distro-slug:
+        type: string
+        required: true
+        description: The Distribution Slug
+
+      display-name:
+        type: string
+        required: true
+        description: The Display Name For The Job
+
+      instances:
+        type: string
+        required: true
+        description: The Instances To Test
+
+      container-slug:
+        type: string
+        required: true
+        description: The Container Slug
+
+      timeout:
+        type: number
+        required: false
+        default: 20
+
+
+jobs:
+  Test:
+    name: ${{ matrix.instance }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        instance: ${{ fromJSON(inputs.instances) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get Version
+        run: |
+          # We need to get the version here and make it an environment variable
+          # It is used to install via bootstrap and in the test
+          # The version is in the instance name
+          # sed 1st - becomes space, 2nd - becomes dot
+          vt_parm_ver=$(echo "${{ matrix.instance }}" | sed 's/-/ /' | sed 's/-/./' | awk -F ' ' '{print $2}')
+          echo "SaltVersion=$vt_parm_ver" >> $GITHUB_ENV
+
+      - name: "Pull container ${{ inputs.container-slug }}"
+        run: |
+          docker pull ghcr.io/saltstack/salt-ci-containers/testing:${{ inputs.container-slug }}
+
+      - name: "Create container ${{ inputs.container-slug }}"
+        run: |
+          /usr/bin/docker create --name ${{ github.run_id }}_salt-test --workdir /_w/ --privileged -e "HOME=/github/home" -e GITHUB_ACTIONS=true -e CI=true -e $GITHUB_ENV -v "/var/run/docker.sock":"/var/run/docker.sock" -v "/home/runner/work":"/__w" -v "/home/runner/work/_temp":"/__w/_temp" -v "/home/runner/work/_actions":"/__w/_actions" -v "/opt/hostedtoolcache":"/__t" -v "/home/runner/work/_temp/_github_home":"/github/home" -v "/home/runner/work/_temp/_github_workflow":"/github/workflow" -v "/home/runner/work/salt-bootstrap/salt-bootstrap":"/_w/btstrap"  --entrypoint "/usr/lib/systemd/systemd" ghcr.io/saltstack/salt-ci-containers/testing:${{ inputs.container-slug }} --unit=rescue.target
+
+      - name: "Start container ${{ inputs.container-slug }}"
+        run: |
+          /usr/bin/docker start ${{ github.run_id }}_salt-test
+
+      - name: "Wait for container ${{ inputs.container-slug }} to finish booting"
+        run: |
+          # systemd's default tmpfiles.d rules wipe /tmp during early boot
+          # (systemd-tmpfiles-setup.service). Running pip/bootstrap before
+          # that finishes races the wipe and fails with spurious
+          # "No such file or directory" errors on /tmp/pip-*-tracker-*.
+          #
+          # The container boots into rescue.target (--unit=rescue.target
+          # above), so "is-system-running" settles on "maintenance", not
+          # "running"/"degraded" - those are kept as a fallback in case a
+          # given image's rescue.target ever pulls in extra units.
+          for i in $(seq 1 30); do
+            state=$(docker exec ${{ github.run_id }}_salt-test systemctl is-system-running 2>/dev/null || true)
+            echo "boot state at ${i}s: '$state'"
+            case "$state" in
+              maintenance|running|degraded) exit 0 ;;
+            esac
+            sleep 1
+          done
+          echo "::error::Container did not finish booting within 30 seconds (last state: '$state')"
+          docker exec ${{ github.run_id }}_salt-test systemctl list-jobs || true
+          docker exec ${{ github.run_id }}_salt-test systemctl --failed || true
+          docker exec ${{ github.run_id }}_salt-test journalctl -b --no-pager || true
+          exit 1
+
+      - name: "Install Python Dependencies with pip breakage in container ${{ inputs.container-slug }}"
+        if: ${{ ( inputs.distro-slug == 'archlinux' ) || ( inputs.distro-slug == 'debian-12' ) || ( inputs.distro-slug == 'debian-13' ) || ( inputs.distro-slug == 'ubuntu-2404' ) || ( inputs.distro-slug == 'ubuntu-2604' ) }}
+        run: |
+          docker exec ${{ github.run_id}}_salt-test python3 -m pip install --break-system-packages -r /_w/btstrap/tests/requirements.txt
+
+      - name: "Install Python Dependencies without pip breakage in container ${{ inputs.container-slug }}"
+        if: ${{ ( inputs.distro-slug != 'archlinux' ) && ( inputs.distro-slug != 'debian-12' ) && ( inputs.distro-slug != 'debian-13' ) && ( inputs.distro-slug != 'ubuntu-2404' ) && ( inputs.distro-slug != 'ubuntu-2604' ) }}
+        run: |
+          docker exec ${{ github.run_id}}_salt-test python3 -m pip install -r /_w/btstrap/tests/requirements.txt
+
+      - name: Bootstrap Salt
+        run: |
+          # sed 1st - becomes space, 2nd - becomes dot
+          bt_arg1=$(echo "${{ matrix.instance }}" | sed 's/-/ /' | sed 's/-/./' | awk -F ' ' '{print $1}')
+          bt_arg2=$(echo "${{ matrix.instance }}" | sed 's/-/ /' | sed 's/-/./' | awk -F ' ' '{print $2}')
+          echo "bt parms ,$bt_parms, bt_arg1 ,$bt_arg1, bt_arg2 ,$bt_arg2,"
+          docker exec ${{ github.run_id}}_salt-test sh -x /_w/btstrap/bootstrap-salt.sh "$bt_arg1" "$bt_arg2"
+
+      - name: Test Bootstrap
+        run: |
+          docker exec ${{ github.run_id}}_salt-test pytest --cache-clear -v -s -ra --log-cli-level=debug /_w/btstrap/tests/integration/
+
+      - name: Test pip requirements file (-e)
+        # One instance per distro is enough; the feature does not depend on the
+        # Salt version. This must run after "Test Bootstrap" and before the -R
+        # test below, which leaves the repo definition pointing at an
+        # unreachable host.
+        if: ${{ matrix.instance == 'stable-3007' }}
+        run: |
+          # A requirements file that can not be used must be rejected up front,
+          # before anything is installed
+          if docker exec ${{ github.run_id}}_salt-test sh /_w/btstrap/bootstrap-salt.sh -e /tmp/does-not-exist.txt stable 3007; then
+            echo "::error::-e with a missing requirements file did not fail"
+            exit 1
+          fi
+
+          # cowsay is small, pure Python and not a dependency of Salt
+          docker exec ${{ github.run_id}}_salt-test sh -c 'printf "# Salt Extensions\ncowsay==6.1\n" > /tmp/pip-requirements.txt'
+          docker exec ${{ github.run_id}}_salt-test sh -x /_w/btstrap/bootstrap-salt.sh -e /tmp/pip-requirements.txt stable 3007
+
+          # The package must be installed into the Salt onedir
+          out=$(docker exec ${{ github.run_id}}_salt-test salt-pip show cowsay)
+          echo "$out"
+          echo "$out" | grep -q '^Version: 6.1$' || { echo "::error::cowsay 6.1 was not installed by -e"; exit 1; }
+
+          # and the policy-rc.d used to hold back service starts on Debian and
+          # Ubuntu must not be left behind
+          if docker exec ${{ github.run_id}}_salt-test test -f /usr/sbin/policy-rc.d.salt-bootstrap-backup; then
+            echo "::error::the policy-rc.d backup was left behind"
+            exit 1
+          fi
+
+      - name: Test custom repository URL (-R)
+        # One instance per distro is enough; the repo definition does not depend
+        # on the Salt version. Arch and ALT Linux have no salt.sources/salt.repo.
+        # This must run after "Test Bootstrap": it leaves the repo definition
+        # pointing at an unreachable host.
+        if: ${{ matrix.instance == 'stable-3007' && !startsWith(inputs.distro-slug, 'archlinux') && !startsWith(inputs.distro-slug, 'altlinux') }}
+        run: |
+          # Regression test for #2123 and #2135: -R must be written into the
+          # repo definition, not just used for the GPG key fetch. The mirror host
+          # is unreachable on purpose, so bootstrap is expected to fail once it
+          # tries to use the repo; only the resulting file is checked.
+          mirror="mirror.example.invalid/artifactory"
+          # Simulate a fresh host. Some distros (e.g. Amazon Linux) only write
+          # the repo file when it is missing and ignore -F, so the one left by
+          # the first bootstrap run would otherwise be kept as is.
+          docker exec ${{ github.run_id}}_salt-test rm -f /etc/apt/sources.list.d/salt.sources /etc/yum.repos.d/salt.repo
+          docker exec ${{ github.run_id}}_salt-test timeout 300 sh -x /_w/btstrap/bootstrap-salt.sh -F -R "$mirror" stable 3007 || echo "bootstrap exited $? (expected)"
+          found=0
+          for f in /etc/apt/sources.list.d/salt.sources /etc/yum.repos.d/salt.repo; do
+            docker exec ${{ github.run_id}}_salt-test test -f "$f" || continue
+            found=1
+            echo "=== $f ==="
+            docker exec ${{ github.run_id}}_salt-test cat "$f"
+            if docker exec ${{ github.run_id}}_salt-test grep -q "packages.broadcom.com" "$f"; then
+              echo "::error::$f still references packages.broadcom.com"
+              exit 1
+            fi
+            docker exec ${{ github.run_id}}_salt-test grep -q "$mirror" "$f" || { echo "::error::$f does not reference $mirror"; exit 1; }
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::No salt repo definition found to check"
+            exit 1
+          fi

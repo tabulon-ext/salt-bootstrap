@@ -1,13 +1,10 @@
 /.project
 *.sw?
+*.un~
 .vagrant
+*__pycache__
+tools
+venv
 
 # Pycharm
 .idea
-
-# test-kitchen
-.kitchen.local.yml
-kitchen.local.yml
-.kitchen/
-.bundle/
-Gemfile.lock

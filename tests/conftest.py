@@ -1,48 +1,58 @@
+import json
 import os
-import pprint
+
 import pytest
-import testinfra
-import logging
+import requests
+from packaging.version import Version
 
-log = logging.getLogger(__name__)
-
-
-@pytest.fixture(scope="session")
-def host():
-    if os.environ.get("KITCHEN_USERNAME") == "vagrant" or "windows" in os.environ.get(
-        "KITCHEN_INSTANCE"
-    ):
-        if "windows" in os.environ.get("KITCHEN_INSTANCE"):
-            return testinfra.get_host(
-                "winrm://{KITCHEN_USERNAME}:{KITCHEN_PASSWORD}@{KITCHEN_HOSTNAME}:{KITCHEN_PORT}".format(
-                    **os.environ
-                ),
-                no_ssl=True,
-            )
-        return testinfra.get_host(
-            "paramiko://{KITCHEN_USERNAME}@{KITCHEN_HOSTNAME}:{KITCHEN_PORT}".format(
-                **os.environ
-            ),
-            ssh_identity_file=os.environ.get("KITCHEN_SSH_KEY"),
-        )
-    return testinfra.get_host(
-        "docker://{KITCHEN_USERNAME}@{KITCHEN_CONTAINER_ID}".format(**os.environ)
-    )
+API_URL = (
+    "https://packages.broadcom.com/artifactory/api/storage/saltproject-generic/windows"
+)
 
 
 @pytest.fixture(scope="session")
 def target_python_version():
-    target_python = os.environ["KITCHEN_SUITE"].split("-", 1)[0]
-    if target_python == "latest":
-        pytest.skip(
-            "Unable to get target python from {}".format(os.environ["KITCHEN_SUITE"])
-        )
-    return int(target_python.replace("py", ""))
+    return 3
 
 
 @pytest.fixture(scope="session")
 def target_salt_version():
-    target_salt = os.environ["KITCHEN_SUITE"].split("-", 2)[-1].replace("-", ".")
-    if target_salt in ("latest", "master"):
+
+    target_salt = os.environ.get("SaltVersion", "")
+    html_response = requests.get(API_URL)
+    content = json.loads(html_response.text)
+    folders = content["children"]
+    versions = {}
+    for folder in folders:
+        if folder["folder"]:
+            version = folder["uri"].strip("/")
+            versions[version] = version
+            # We're trying to get the latest major version and latest overall
+            maj_ver, _ = version.split(".")
+            if maj_ver in versions:
+                if Version(version) > Version(versions[maj_ver]):
+                    versions[maj_ver] = version
+            else:
+                versions[maj_ver] = version
+
+            if "latest" in versions:
+                if Version(version) > Version(versions["latest"]):
+                    versions["latest"] = version
+            else:
+                versions["latest"] = version
+
+    if target_salt.startswith("v"):
+        target_salt = target_salt[1:]
+    if target_salt not in versions:
+        pytest.skip(f"Invalid testing version: {target_salt}")
+    if target_salt in (
+        "default",
+        "latest",
+        "master",
+        "nightly",
+        "stable",
+        "onedir",
+        "git",
+    ):
         pytest.skip("Don't have a specific salt version to test against")
-    return target_salt
+    return versions[target_salt]

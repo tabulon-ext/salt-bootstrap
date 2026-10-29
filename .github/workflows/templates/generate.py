@@ -1,342 +1,497 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
+"""
+To generate the workflows run the following:
+pre-commit run -av generate-actions-workflow
+"""
+import json
 import os
-import datetime
+import pathlib
 
 os.chdir(os.path.abspath(os.path.dirname(__file__)))
 
+#    "amazonlinux-2",
+#    "fedora-40",
+#    "photon-4",
+#    "ubuntu-2004",
+#    "ubuntu-2404",
 LINUX_DISTROS = [
-    "almalinux-8",
-    "amazon-2",
-    "arch",
-    "centos-7",
-    "centos-8",
-    "debian-10",
-    "debian-11",
-    "debian-9",
-    "fedora-33",
-    "fedora-34",
-    "fedora-35",
-    "gentoo",
-    "gentoo-systemd",
-    "opensuse-15",
-    "opensuse-tumbleweed",
-    "oraclelinux-7",
-    "oraclelinux-8",
+    "altlinux-10",
+    "altlinux-11",
+    "amazonlinux-2023",
+    "archlinux",
+    "debian-12",
+    "debian-13",
+    "photon-5",
     "rockylinux-8",
-    "ubuntu-1804",
-    "ubuntu-2004",
-    "ubuntu-2104",
+    "rockylinux-9",
+    "ubuntu-2204",
+    "ubuntu-2604",
 ]
-OSX = WINDOWS = []
 
+WINDOWS = [
+    "windows-2022",
+    "windows-2025",
+]
+
+OSX = [
+    "macos-15-intel",
+    "macos-26",
+    "macos-26-intel",
+]
+
+#    "amazonlinux-2",
+#    "fedora-40",
+#    "photon-4",
+#    "ubuntu-2004",
+#    "ubuntu-2404",
 STABLE_DISTROS = [
-    "amazon-2",
-    "centos-7",
-    "centos-8",
-    "debian-10",
-    "debian-11",
-    "debian-9",
-    "fedora-33",
-    "fedora-34",
-    "fedora-35",
-    "gentoo",
-    "gentoo-systemd",
-    "oraclelinux-7",
-    "oraclelinux-8",
-    "ubuntu-1804",
+    "altlinux-10",
+    "altlinux-11",
+    "amazonlinux-2023",
+    "archlinux",
+    "debian-12",
+    "debian-13",
+    "photon-5",
+    "rockylinux-8",
+    "rockylinux-9",
+    "ubuntu-2204",
+    "ubuntu-2604",
+]
+
+#    "amazonlinux-2",
+#    "fedora-40",
+#    "photon-4",
+#    "ubuntu-2004",
+#    "ubuntu-2404",
+ONEDIR_DISTROS = [
+    "altlinux-10",
+    "altlinux-11",
+    "amazonlinux-2023",
+    "archlinux",
+    "debian-12",
+    "debian-13",
+    "photon-5",
+    "rockylinux-8",
+    "rockylinux-9",
+    "ubuntu-2204",
+    "ubuntu-2604",
+]
+
+#    "amazonlinux-2",
+#    "amazonlinux-2023",
+#    "photon-4",
+#    "photon-5",
+#    "rockylinux-8",
+#    "ubuntu-2404",
+ONEDIR_RC_DISTROS = [
+    "altlinux-10",
+    "altlinux-11",
+    "debian-12",
+    "photon-5",
+    "rockylinux-9",
+    "ubuntu-2204",
+    "ubuntu-2604",
+]
+
+BLACKLIST_3006 = [
+    "altlinux-11",
+    "debian-12",
+    "fedora-40",
+    "ubuntu-2404",
+]
+
+#    "photon-5",
+BLACKLIST_3007 = [
+    "photon-4",
+]
+
+BLACKLIST_3008 = [
+    "altlinux-10",
+]
+
+#    "ubuntu-2204",
+BLACKLIST_GIT_3006 = [
+    "altlinux-11",
+    "amazonlinux-2",
+    "amazonlinux-2023",
+    "debian-12",
+    "debian-13",
+    "fedora-40",
+    "photon-4",
+    "photon-5",
+    "rockylinux-9",
     "ubuntu-2004",
-    "ubuntu-2104",
+    "ubuntu-2404",
 ]
 
-PY2_BLACKLIST = [
-    "almalinux-8",
-    "centos-8",
-    "debian-10",
-    "debian-11",
-    "fedora-33",
-    "fedora-34",
-    "fedora-35",
-    "gentoo",
-    "gentoo-systemd",
-    "opensuse-15",
-    "opensuse-tumbleweed",
-    "oraclelinux-8",
-    "rockylinux-8",
+#    "debian-12",
+#    "ubuntu-2204",
+BLACKLIST_GIT_3007 = [
+    "amazonlinux-2",
+    "amazonlinux-2023",
+    "debian-13",
+    "fedora-40",
+    "photon-4",
+    "photon-5",
+    "rockylinux-9",
     "ubuntu-2004",
-    "ubuntu-2104",
+    "ubuntu-2404",
 ]
 
-BLACKLIST_3000 = [
-    "almalinux-8",
-    "debian-11",
-    "fedora-33",
-    "fedora-34",
-    "fedora-35",
-    "opensuse-tumbleweed",
-    "rockylinux-8",
-    "ubuntu-2004",
-    "ubuntu-2104",
+BLACKLIST_GIT_3008 = [
+    "altlinux-10",
 ]
 
-BLACKLIST_3001 = [
-    "almalinux-8",
-    "debian-11",
-    "rockylinux-8",
-    "ubuntu-2104",
+#    "debian-12",
+BLACKLIST_GIT_MASTER = [
+    "amazonlinux-2",
+    "amazonlinux-2023",
+    "debian-13",
+    "fedora-40",
+    "photon-4",
+    "photon-5",
+    "rockylinux-9",
 ]
 
-BLACKLIST_3001_0 = [
-    "almalinux-8",
-    "debian-11",
-    "gentoo",
-    "gentoo-systemd",
-    "rockylinux-8",
-    "ubuntu-2104",
-]
-
-BLACKLIST_3002_0 = [
-    "almalinux-8",
-    "debian-11",
-    "gentoo",
-    "gentoo-systemd",
-    "rockylinux-8",
-    "ubuntu-2104",
-]
-
-SALT_BRANCHES = [
-    "3000",
-    "3001",
-    "3001-0",
-    "3002",
-    "3002-0",
+SALT_VERSIONS = [
+    "3006",
+    "3006-24",
+    "3007",
+    "3007-1",
+    "3008",
     "master",
+    "latest",
+    "nightly",
+]
+
+ONEDIR_SALT_VERSIONS = [
+    "3006",
+    "3007",
+    "3008",
     "latest",
 ]
 
-BRANCH_DISPLAY_NAMES = {
-    "3000": "v3000",
-    "3001": "v3001",
-    "3001-0": "v3001.0",
-    "3002": "v3002",
-    "3002-0": "v3002.0",
+ONEDIR_RC_SALT_VERSIONS = []
+
+VERSION_DISPLAY_NAMES = {
+    "3006": "v3006",
+    "3006-24": "v3006.24",
+    "3007": "v3007",
+    "3007-1": "v3007.1",
+    "3008": "v3008",
     "master": "Master",
     "latest": "Latest",
+    "nightly": "Nightly",
 }
 
-STABLE_BRANCH_BLACKLIST = []
+STABLE_VERSION_BLACKLIST = [
+    "master",
+    "nightly",
+]
+
+MAC_STABLE_VERSION_BLACKLIST = [
+    "master",
+    "nightly",
+]
+
+GIT_VERSION_BLACKLIST = [
+    "3006-24",
+    "3007-1",
+    "nightly",
+]
+
+# TODO: Revert the commit relating to this section, once the Git-based builds
+#       have been fixed for the distros listed below
+#
+#       Apparent failure is:
+#
+#           /usr/lib/python3.11/site-packages/setuptools/command/install.py:34:
+#           SetuptoolsDeprecationWarning: setup.py install is deprecated.
+#           Use build and pip and other standards-based tools.
+#
+GIT_DISTRO_BLACKLIST = [
+    "rockylinux-8",
+]
 
 LATEST_PKG_BLACKLIST = []
 
 DISTRO_DISPLAY_NAMES = {
-    "almalinux-8": "AlmaLinux 8",
-    "amazon-2": "Amazon 2",
-    "arch": "Arch",
-    "centos-7": "CentOS 7",
-    "centos-8": "CentOS 8",
-    "debian-10": "Debian 10",
-    "debian-11": "Debian 11",
-    "debian-9": "Debian 9",
-    "fedora-33": "Fedora 33",
-    "fedora-34": "Fedora 34",
-    "fedora-35": "Fedora 35",
-    "gentoo": "Gentoo",
-    "gentoo-systemd": "Gentoo (systemd)",
-    "opensuse-15": "Opensuse 15",
-    "opensuse-tumbleweed": "Opensuse Tumbleweed",
-    "oraclelinux-7": "Oracle Linux 7",
-    "oraclelinux-8": "Oracle Linux 8",
+    "altlinux-10": "ALT Linux 10",
+    "altlinux-11": "ALT Linux 11",
+    "amazonlinux-2": "Amazon 2",
+    "amazonlinux-2023": "Amazon 2023",
+    "archlinux": "Arch Linux",
+    "debian-12": "Debian 12",
+    "debian-13": "Debian 13",
+    "fedora-40": "Fedora 40",
+    "photon-4": "Photon OS 4",
+    "photon-5": "Photon OS 5",
     "rockylinux-8": "Rocky Linux 8",
-    "ubuntu-1804": "Ubuntu 18.04",
+    "rockylinux-9": "Rocky Linux 9",
     "ubuntu-2004": "Ubuntu 20.04",
-    "ubuntu-2104": "Ubuntu 21.04",
+    "ubuntu-2204": "Ubuntu 22.04",
+    "ubuntu-2404": "Ubuntu 24.04",
+    "ubuntu-2604": "Ubuntu 26.04",
+    "macos-15-intel": "macOS 15 (intel)",
+    "macos-26": "macOS 26 (m-series)",
+    "macos-26-intel": "macOS 26 (intel)",
+    "windows-2022": "Windows 2022",
+    "windows-2025": "Windows 2025",
+}
+
+CONTAINER_SLUG_NAMES = {
+    "altlinux-10": "altlinux-10",
+    "altlinux-11": "altlinux-11",
+    "amazonlinux-2": "amazonlinux-2",
+    "amazonlinux-2023": "amazonlinux-2023",
+    "archlinux": "archlinux",
+    "debian-12": "debian-12",
+    "debian-13": "debian-13",
+    "fedora-40": "fedora-40",
+    "photon-4": "photon-4",
+    "photon-5": "photon-5",
+    "rockylinux-8": "rockylinux-8",
+    "rockylinux-9": "rockylinux-9",
+    "ubuntu-2004": "ubuntu-20.04",
+    "ubuntu-2204": "ubuntu-22.04",
+    "ubuntu-2404": "ubuntu-24.04",
+    "ubuntu-2604": "ubuntu-26.04",
+    "macos-15-intel": "macos-15-intel",
+    "macos-26": "macos-26",
+    "macos-26-intel": "macos-26-intel",
+    "windows-2022": "windows-2022",
+    "windows-2025": "windows-2025",
 }
 
 TIMEOUT_DEFAULT = 20
-TIMEOUT_OVERRIDES = {
-    "gentoo": 90,
-    "gentoo-systemd": 90,
-}
-BRANCH_ONLY_OVERRIDES = [
-    "gentoo",
-    "gentoo-systemd",
-]
+TIMEOUT_OVERRIDES = {}
+VERSION_ONLY_OVERRIDES = []
+
+TEMPLATE = """
+  {distro}:
+    name: {display_name}{ifcheck}
+    uses: {uses}
+    needs:
+      - lint
+      - lint-powershell
+      - generate-actions-workflow
+    with:
+      distro-slug: {distro}
+      display-name: {display_name}
+      container-slug: {container_name}
+      timeout: {timeout_minutes}{runs_on}
+      instances: '{instances}'
+"""
 
 
 def generate_test_jobs():
     test_jobs = ""
-    branch_only_test_jobs = ""
+    needs = [
+        "lint",
+        "lint-powershell",
+        "test-shell",
+        "test-powershell",
+        "generate-actions-workflow",
+    ]
 
-    for distro in LINUX_DISTROS + OSX + WINDOWS:
+    test_jobs += "\n"
+    for distro in OSX:
+        test_jobs += "\n"
+        runs_on = distro
+        runs_on = f"\n      runs-on: {runs_on}"
+        ifcheck = "\n    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'"
+        uses = "./.github/workflows/test-macos.yml"
+        instances = []
         timeout_minutes = (
             TIMEOUT_OVERRIDES[distro]
             if distro in TIMEOUT_OVERRIDES
             else TIMEOUT_DEFAULT
         )
-        needs = "    needs: lint"
-        if distro in BRANCH_ONLY_OVERRIDES:
-            needs = ""
-        current_test_jobs = ""
 
-        for branch in SALT_BRANCHES:
-
-            if branch == "latest":
-                if distro in LATEST_PKG_BLACKLIST:
-                    continue
-                if distro in LINUX_DISTROS:
-                    template = "linux.yml"
-                elif distro in OSX:
-                    template = "osx.yml"
-                elif distro in WINDOWS:
-                    template = "windows.yml"
-                else:
-                    print("Don't know how to handle {}".format(distro))
-
-                with open(template) as rfh:
-                    current_test_jobs += "\n{}\n".format(
-                        rfh.read()
-                        .replace(
-                            "{python_version}-{bootstrap_type}-{branch}-{distro}",
-                            "{branch}-{distro}",
-                        )
-                        .format(
-                            distro=distro,
-                            branch=branch,
-                            display_name="{} Latest packaged release".format(
-                                DISTRO_DISPLAY_NAMES[distro],
-                            ),
-                            timeout_minutes=timeout_minutes,
-                            needs=needs,
-                        )
-                    )
+        for salt_version in SALT_VERSIONS:
+            if salt_version == "latest":
+                instances.append(salt_version)
                 continue
 
-            for python_version in ("py2", "py3"):
+            for bootstrap_type in ["stable"]:
+                if bootstrap_type == "stable":
+                    if salt_version in MAC_STABLE_VERSION_BLACKLIST:
+                        continue
 
-                if branch == "master" and python_version == "py2":
-                    # Salt's master branch no longer supports Python 2
+                test_target = f"{bootstrap_type}-{salt_version}"
+                instances.append(test_target)
+
+        for bootstrap_type in ["default"]:
+            if distro not in STABLE_DISTROS:
+                continue
+            instances.append(bootstrap_type)
+
+        if instances:
+            needs.append(distro)
+            test_jobs += TEMPLATE.format(
+                distro=distro,
+                runs_on=runs_on,
+                uses=uses,
+                ifcheck=ifcheck,
+                instances=json.dumps(instances),
+                display_name=DISTRO_DISPLAY_NAMES[distro],
+                container_name=CONTAINER_SLUG_NAMES[distro],
+                timeout_minutes=timeout_minutes,
+            )
+
+    test_jobs += "\n"
+    for distro in WINDOWS:
+        test_jobs += "\n"
+        runs_on = f"\n      runs-on: {distro}"
+        ifcheck = "\n    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'"
+        uses = "./.github/workflows/test-windows.yml"
+        instances = []
+        timeout_minutes = (
+            TIMEOUT_OVERRIDES[distro]
+            if distro in TIMEOUT_OVERRIDES
+            else TIMEOUT_DEFAULT
+        )
+
+        for salt_version in SALT_VERSIONS:
+
+            if salt_version == "latest":
+
+                instances.append(salt_version)
+                continue
+
+            for bootstrap_type in ["stable"]:
+                if bootstrap_type == "stable":
+                    if salt_version in STABLE_VERSION_BLACKLIST:
+                        continue
+
+                test_target = f"{bootstrap_type}-{salt_version}"
+                instances.append(test_target)
+
+        for bootstrap_type in ["default"]:
+            if distro not in STABLE_DISTROS:
+                continue
+            instances.append(bootstrap_type)
+
+        if instances:
+            needs.append(distro)
+            test_jobs += TEMPLATE.format(
+                distro=distro,
+                runs_on=runs_on,
+                uses=uses,
+                ifcheck=ifcheck,
+                instances=json.dumps(instances),
+                display_name=DISTRO_DISPLAY_NAMES[distro],
+                container_name=CONTAINER_SLUG_NAMES[distro],
+                timeout_minutes=timeout_minutes,
+            )
+
+    test_jobs += "\n"
+    for distro in LINUX_DISTROS:
+        test_jobs += "\n"
+        runs_on = ""
+        ifcheck = "\n    if: github.event_name == 'push' || needs.collect-changed-files.outputs.run-tests == 'true'"
+        uses = "./.github/workflows/test-linux.yml"
+        instances = []
+        timeout_minutes = (
+            TIMEOUT_OVERRIDES[distro]
+            if distro in TIMEOUT_OVERRIDES
+            else TIMEOUT_DEFAULT
+        )
+        if distro in VERSION_ONLY_OVERRIDES:
+            ifcheck = "\n    if: github.event_name == 'push'"
+
+        for salt_version in SALT_VERSIONS:
+
+            if salt_version == "latest":
+                if distro in LATEST_PKG_BLACKLIST:
                     continue
 
-                try:
-                    if int(branch.split("-")[0]) >= 3000 and python_version == "py2":
-                        # Salt's 300X versions no longer supports Python 2
+                instances.append(salt_version)
+                continue
+
+            for bootstrap_type in (
+                "stable",
+                "git",
+                "onedir",
+                "onedir-rc",
+            ):
+                if bootstrap_type == "onedir":
+                    if salt_version not in ONEDIR_SALT_VERSIONS:
                         continue
-                except ValueError:
-                    pass
-
-                for bootstrap_type in ("stable", "git"):
-                    if bootstrap_type == "stable":
-                        if branch == "master":
-                            # For the master branch there's no stable build
-                            continue
-                        if distro not in STABLE_DISTROS:
-                            continue
-
-                        if branch in STABLE_BRANCH_BLACKLIST:
-                            continue
-
-                        if distro.startswith("fedora") and branch != "latest":
-                            # Fedora does not keep old builds around
-                            continue
-
-                    if bootstrap_type == "git":
-                        # .0 versions are a virtual version for pinning to the first point release of a major release, such as 3001, there is no git version.
-                        if branch.endswith("-0"):
-                            continue
-
-                        if python_version == "py3":
-                            if distro in ("arch"):
-                                allowed_branches = ["master"]
-                                try:
-                                    int_branch = int(branch)
-                                    if int_branch > 3000:
-                                        allowed_branches.append(branch)
-                                except ValueError:
-                                    pass
-                                if branch not in allowed_branches:
-                                    # Arch and Fedora default to py3.8
-                                    continue
-                    if branch == "3000" and distro in BLACKLIST_3000:
+                    if distro not in ONEDIR_DISTROS:
                         continue
 
-                    if branch == "3001" and distro in BLACKLIST_3001:
+                if bootstrap_type == "onedir-rc":
+                    if salt_version not in ONEDIR_RC_SALT_VERSIONS:
+                        continue
+                    if distro not in ONEDIR_RC_DISTROS:
                         continue
 
-                    if branch == "3001-0" and distro in BLACKLIST_3001_0:
+                if bootstrap_type == "stable":
+                    if salt_version in STABLE_VERSION_BLACKLIST:
+                        continue
+                    if distro not in STABLE_DISTROS:
                         continue
 
-                    if branch == "3002-0" and distro in BLACKLIST_3002_0:
+                if bootstrap_type == "git":
+                    if salt_version in GIT_VERSION_BLACKLIST:
+                        continue
+                    if distro in GIT_DISTRO_BLACKLIST:
                         continue
 
-                    if python_version == "py2" and distro in PY2_BLACKLIST:
+                BLACKLIST = {
+                    "3006": BLACKLIST_3006,
+                    "3006-24": BLACKLIST_3006,
+                    "3007": BLACKLIST_3007,
+                    "3007-1": BLACKLIST_3007,
+                    "3008": BLACKLIST_3008,
+                }
+                if bootstrap_type == "git":
+                    BLACKLIST = {
+                        "3006": BLACKLIST_GIT_3006,
+                        "3007": BLACKLIST_GIT_3007,
+                        "3008": BLACKLIST_GIT_3008,
+                        "master": BLACKLIST_GIT_MASTER,
+                    }
+
+                    # .0 versions are a virtual version for pinning to the first
+                    # point release of a major release, such as 3003,
+                    # there is no git version.
+                    if salt_version.endswith("-0"):
                         continue
 
-                    if distro in LINUX_DISTROS:
-                        template = "linux.yml"
-                    elif distro in OSX:
-                        template = "osx.yml"
-                    elif distro in WINDOWS:
-                        template = "windows.yml"
-                    else:
-                        print("Don't know how to handle {}".format(distro))
+                if distro in BLACKLIST.get(salt_version, []):
+                    continue
 
-                    with open(template) as rfh:
-                        current_test_jobs += "\n{}\n".format(
-                            rfh.read().format(
-                                distro=distro,
-                                branch=branch,
-                                python_version=python_version,
-                                bootstrap_type=bootstrap_type,
-                                display_name="{} {} {} {}".format(
-                                    DISTRO_DISPLAY_NAMES[distro],
-                                    BRANCH_DISPLAY_NAMES[branch],
-                                    python_version.capitalize(),
-                                    bootstrap_type.capitalize(),
-                                ),
-                                timeout_minutes=timeout_minutes,
-                                needs=needs,
-                            )
-                        )
-        if distro in BRANCH_ONLY_OVERRIDES:
-            branch_only_test_jobs += current_test_jobs
-        else:
-            test_jobs += current_test_jobs
+                test_target = f"{bootstrap_type}-{salt_version}"
+                instances.append(test_target)
 
-    with open("lint.yml") as rfh:
-        lint_job = "\n{}\n".format(rfh.read())
+        for bootstrap_type in ["default"]:
+            if distro not in STABLE_DISTROS:
+                continue
+            instances.append(bootstrap_type)
 
-    with open("pre-commit.yml") as rfh:
-        pre_commit_job = "\n{}\n".format(rfh.read())
-
-    with open("../main.yml", "w") as wfh:
-        with open("main.yml") as rfh:
-            wfh.write(
-                "{}\n".format(
-                    rfh.read()
-                    .format(
-                        jobs="{pre_commit}{lint}{test}".format(
-                            lint=lint_job, test=test_jobs, pre_commit=pre_commit_job,
-                        ),
-                        on="push, pull_request",
-                        name="Testing",
-                    )
-                    .strip()
-                )
+        if instances:
+            needs.append(distro)
+            test_jobs += TEMPLATE.format(
+                distro=distro,
+                runs_on=runs_on,
+                uses=uses,
+                ifcheck=ifcheck,
+                instances=json.dumps(instances),
+                display_name=DISTRO_DISPLAY_NAMES[distro],
+                container_name=CONTAINER_SLUG_NAMES[distro],
+                timeout_minutes=timeout_minutes,
             )
 
-    with open("../main-branch-only.yml", "w") as wfh:
-        with open("main.yml") as rfh:
-            wfh.write(
-                "{}\n".format(
-                    rfh.read()
-                    .format(
-                        jobs="{test}".format(test=branch_only_test_jobs,),
-                        on="push",
-                        name="Branch Testing",
-                    )
-                    .strip()
-                )
-            )
+    ci_src_workflow = pathlib.Path("ci.yml").resolve()
+    ci_tail_src_workflow = pathlib.Path("ci-tail.yml").resolve()
+    ci_dst_workflow = pathlib.Path("../ci.yml").resolve()
+    ci_workflow_contents = ci_src_workflow.read_text() + test_jobs + "\n"
+    ci_workflow_contents += ci_tail_src_workflow.read_text().format(
+        needs="\n".join([f"      - {need}" for need in needs]).lstrip()
+    )
+    ci_dst_workflow.write_text(ci_workflow_contents)
 
 
 if __name__ == "__main__":

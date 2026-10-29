@@ -1,0 +1,84 @@
+name: Test MacOS
+on:
+  workflow_call:
+    inputs:
+      distro-slug:
+        type: string
+        required: true
+        description: The Distribution Slug
+
+      display-name:
+        type: string
+        required: true
+        description: The Display Name For The Job
+
+      runs-on:
+        type: string
+        required: true
+        description: The GitHub MacOS Worker To Run Workflow On
+
+      instances:
+        type: string
+        required: true
+        description: The Instances To Test
+
+      container-slug:
+        type: string
+        required: true
+        description: The Container Slug
+
+      timeout:
+        type: number
+        required: false
+        default: 20
+        description: The timeout(in minutes) for the workflow
+
+jobs:
+  Test:
+    name: ${{ matrix.instance }}
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        instance: ${{ fromJSON(inputs.instances) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python Dependencies
+        run: |
+          python3 -m pip install --break-system-packages -r tests/requirements.txt
+
+      - name: Get Version
+        run: |
+          # We need to get the version here and make it an environment variable
+          # It is used to install via bootstrap and in the test
+          # The version is in the instance name
+          # sed 1st - becomes space, 2nd - becomes dot
+          vt_parms=$(echo "${{ matrix.instance }}" | sed 's/-/ /' | sed 's/-/./')
+          vt_parm_ver=$(echo "$vt_parms" | awk -F ' ' '{print $2}')
+          echo "SaltVersion=$vt_parm_ver" >> $GITHUB_ENV
+
+      - name: Bootstrap Salt
+        run: |
+          # sed 1st - becomes space, 2nd - becomes dot
+          bt_parms=$(echo "${{ matrix.instance }}" | sed 's/-/ /' | sed 's/-/./')
+          bt_arg1=$(echo "$bt_parms" | awk -F ' ' '{print $1}')
+          bt_arg2=$(echo "$bt_parms" | awk -F ' ' '{print $2}')
+          sudo sh ./bootstrap-salt.sh "$bt_arg1" "$bt_arg2"
+
+      - name: Test Bootstrap
+        run: |
+          pytest --cache-clear -v -s -ra --log-cli-level=debug tests/integration/
+
+      - name: Test pip requirements file (-e) is rejected
+        # The macOS package starts the minion itself while it is installed, so
+        # there is no chance to install packages first. -e must fail up front
+        # instead of installing them after Salt has already started.
+        run: |
+          printf '# Salt Extensions\ncowsay==6.1\n' > "$RUNNER_TEMP/pip-requirements.txt"
+          if sudo sh ./bootstrap-salt.sh -e "$RUNNER_TEMP/pip-requirements.txt" onedir; then
+            echo "::error::-e was accepted on macOS"
+            exit 1
+          fi

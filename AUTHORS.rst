@@ -1,5 +1,11 @@
+This authors list is kept for historical purposes
+=================================================
+
+Feel free to add yourself to this list, but for a full list of contributors,
+`check here <https://github.com/saltstack/salt-bootstrap/graphs/contributors>`_.
+
 Authors
-=======
+-------
 
 Here's a list of everyone who contributed to salt-bootstrap in alphabetical
 order.
@@ -20,11 +26,12 @@ Andrew Dean                 ndrwdn                 ndrwdn@gmail.com
 Andy Boff                   caelor                 github@plek.me.uk
 Angelo Gründler             plueschopath           angelo.gruendler@w1r3.net
 Ari Aosved                  devaos                 ari.aosved@gmail.com
+Ari Maniatis                ari                    ari@ish.com.au
 Ashok Raja R                ashokrajar             ashokrajar@users.noreply.github.com
 Beau Hargis                 beaucephus             beau@customermobile.com
 Benjamin Drung              bdrung                 bdrung@debian.org
 BlaineAtAffirmOnceMore      BlaineAtAffirm
-Boris Feld                  Lothiraldan
+Boris Feld                  Lothiraldan            lothiraldan@gmail.com
 Brad Thurber                bradthurber
 Brandon Clifford            brandon099             brandon.clifford@vivint.com
 Bret Fisher                 BretFisher             bret@fishbrains.com
@@ -45,21 +52,25 @@ Dan Mick                    dmick                  dan.mick@inktank.com
 Daniel Poelzleithner        poelzi
 Daniel Wallace              gtmanfred              danielwallace@gtmanfred.com
 Darko Cerdic                darkocerdic
+Daniil Chistyakov           KegsZooL               danil.chistyakov.2015@inbox.ru
 Daryl Turner                darylturner            d.turner@arkadin.com
 David J. Felix              DavidJFelix
+David Murphy                daithi                david-dm.murphy@broadcom.com
 denmat                      denmat
 Denys Havrysh               vutny                  denys.gavrysh@gmail.com
 deployboy                   deployboy
 Diego Woitasen              diegows                diego@flugel.it
 Dmitry Kuzmenko             DmitryKuzmenko         dmitry.kuzmenko@dsr-corporation.com
+Ed Silva                    edlitmus               ed@edlitmus.info
 EHJ-52n                     EHJ-52n                EHJ-52n@users.noreply.github.com
 ek9                         ek9
-Elias Probst                eliasp
+Elias Probst                eliasp                 eliasp@mastodan.social
 eliezerlp                   eliezerlp
 Emiel Kollof                ekollof
 Eric Radman                 eradman                ericshane@eradman.com
 Erik Ankrom                 erikankrom
 Erik Johnson                terminalmage           erik@saltstack.com
+Erwin Dondorp               erwindon               from_github@dondorp.com
 EYJ                         eyj
 Felippe Burk                felippeb
 fizmat                      fizmat
@@ -93,6 +104,7 @@ John Hubbard                ender8282              ender8282@gmail.com
 Jorge Schrauwen             sjorge                 sjorge@blackdot.be
 Joseph Pacura               jpacura
 Juan A. Moyano              wincus                 wincus.public@gmail.com
+Julian van Dijk             julian9499
 Justin Anderson             justinta               justin.ta@outlook.com
 Justin Findlay              jfindlay               jfindlay@gmail.com
                             kgbsd
@@ -162,7 +174,7 @@ Sam                         sticky-note            sammy.smati@skazy.nc
 Sebastian Wendel            sourceindex
 Sebastien Blaisot           sblaisot
 Sergey Paramonov            serge-p                serg.paramonov@s-vp.com
-Shane Lee                   twangboy               slee@saltstack.com
+Shane Lee                   twangboy               shane.lee@broadcom.com
 Shawn Butts                 shawnbutts
 Skyler Berg                 skylerberg             skylertheberg@gmail.com
 Stanislav B                 stanislavb
@@ -176,6 +188,7 @@ Thomas S. Hatch             thatch45               thatch45@saltstack.com
 Tobias Jungel               toanju                 Tobias.Jungel@gmail.com
 Tony Narlock                tony
 Valentin Bud                valentinbud            valentin@databus.pro
+vegcom                      vegcom                 vegcom@protonmail.com
 Vernon Cole                 vernondcole            vernondcole@gmail.com
 Vladimir Kozhukalov         kozhukalov
 Whit Morriss                whitmo                 whit@nocoast.us
